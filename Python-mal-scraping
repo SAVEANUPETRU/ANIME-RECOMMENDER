@@ -1,0 +1,184 @@
+import requests
+import time
+from supabase import create_client, Client
+import json
+from typing import List, Dict, Optional
+
+# Configurare Supabase
+SUPABASE_URL = "https://ftjfabgifsbdlnbxvgwo.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ0amZhYmdpZnNiZGxuYnh2Z3dvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU1MTAyOTcsImV4cCI6MjA3MTA4NjI5N30.os3bsl_sSyeLQ7O-cLGS2fUGlNzdtaxc_py_e0mjGQI"
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+class MALScraper:
+    def __init__(self):
+        self.base_url = "https://api.jikan.moe/v4"
+        self.headers = {
+            'User-Agent': 'AnimeRecommendationBot/1.0'
+        }
+
+    def get_top_anime(self, limit: int = 500, page: int = 25) -> List[Dict]:
+        """Obține lista cu top anime de pe MAL"""
+        try:
+            url = f"{self.base_url}/top/anime"
+            params = {
+                'limit': min(limit, 25),  # API limit
+                'page': page
+            }
+
+            response = requests.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+
+            time.sleep(1)  # Rate limiting
+            return response.json().get('data', [])
+
+        except Exception as e:
+            print(f"Eroare la obținerea top anime: {e}")
+            return []
+
+    def get_anime_characters(self, anime_id: int) -> List[Dict]:
+        """Obține caracterele unui anime"""
+        try:
+            url = f"{self.base_url}/anime/{anime_id}/characters"
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+
+            time.sleep(1)
+            return response.json().get('data', [])
+
+        except Exception as e:
+            print(f"Eroare la obținerea caracterelor pentru anime {anime_id}: {e}")
+            return []
+
+    def extract_character_traits(self, character_name: str, role: str) -> str:
+        """Extrage trăsăturile caracterului bazate pe nume și rol"""
+        name_lower = character_name.lower()
+        role_lower = role.lower()
+
+        traits = []
+
+        # Analiză bazată pe rol
+        if 'main' in role_lower:
+            traits.append('protagonist')
+        elif 'supporting' in role_lower:
+            traits.append('supporting')
+
+        # Analiză bazată pe nume (pattern recognition simplu)
+        if any(word in name_lower for word in ['dark', 'shadow', 'death', 'demon']):
+            traits.append('villain')
+        elif any(word in name_lower for word in ['light', 'hero', 'pure', 'angel']):
+            traits.append('heroic')
+        elif any(word in name_lower for word in ['smart', 'genius', 'wise']):
+            traits.append('intelligent')
+        elif any(word in name_lower for word in ['funny', 'comic', 'joke']):
+            traits.append('comedic')
+
+        if not traits:
+            traits.append('normal')
+
+        return ' '.join(traits)
+
+    def get_main_characters_names(self, mal_anime_id: int) -> List[str]:
+        """Obține numele caracterelor principale ale unui anime"""
+        characters_data = self.get_anime_characters(mal_anime_id)
+        main_characters = []
+
+        # Filtrează doar caracterele principale
+        for char_data in characters_data:
+            role = char_data.get('role', '').lower()
+            if 'main' in role:
+                character = char_data.get('character', {})
+                character_name = character.get('name', 'Unknown')
+                main_characters.append(character_name)
+
+                # Limităm la maxim 5 caractere principale
+                if len(main_characters) >= 5:
+                    break
+
+        return main_characters
+
+    def insert_anime(self, anime_data: Dict, mal_anime_id: int) -> Optional[int]:
+        """Inserează un anime în baza de date"""
+        try:
+            # Obține caracterele principale
+            main_characters = self.get_main_characters_names(mal_anime_id)
+
+            # Pregătire date
+            anime_record = {
+                'name': anime_data.get('title', 'Unknown'),
+                'episodes': anime_data.get('episodes') or 0,
+                'themes': [theme['name'] for theme in anime_data.get('themes', [])],
+                'genres': [genre['name'] for genre in anime_data.get('genres', [])],
+                'mains': main_characters  # caracterele principale aici
+            }
+
+            # Inserează în Supabase
+            result = supabase.table('anime').insert(anime_record).execute()
+
+            if result.data:
+                print(f"✅ Anime insereat: {anime_record['name']}")
+                print(f"  📝 Caractere principale: {', '.join(main_characters)}")
+                return result.data[0]['id']
+
+        except Exception as e:
+            print(f"❌ Eroare la inserarea anime: {e}")
+
+        return None
+
+    def scrape_and_populate(self, num_pages: int = 4):
+        """Funcția principală pentru scraping și populare"""
+        print("🚀 Începe scraping-ul MyAnimeList...")
+
+        total_anime = 0
+
+        for page in range(1, num_pages + 1):
+            print(f"\n📄 Procesez pagina {page}...")
+            if page < 120:
+                continue
+            anime_list = self.get_top_anime(limit=25, page=page)
+
+            for anime_data in anime_list:
+                mal_id = anime_data.get('mal_id')
+                title = anime_data.get('title', 'Unknown')
+
+                print(f"\n🎯 Procesez: {title}")
+
+                # Verifică dacă anime-ul există deja
+                existing = supabase.table('anime').select('id').eq('name', title).execute()
+
+                if existing.data:
+                    print(f"  ⚠️ Anime-ul {title} există deja, sărim peste el")
+                    continue
+
+                # Inserează anime-ul cu caracterele principale
+                anime_db_id = self.insert_anime(anime_data, mal_id)
+
+                if anime_db_id:
+                    total_anime += 1
+
+                # Rate limiting
+                time.sleep(2)
+
+        print(f"\n🎉 Scraping complet! Total anime procesate: {total_anime}")
+
+
+def main():
+    # Verifică conexiunea la Supabase
+    try:
+        test = supabase.table('anime').select('count').execute()
+        print("✅ Conexiunea la Supabase funcționează!")
+    except Exception as e:
+        print(f"❌ Eroare conexiune Supabase: {e}")
+        print("Verifică SUPABASE_URL și SUPABASE_KEY")
+        return
+
+    # Inițializează scraper-ul
+    scraper = MALScraper()
+
+    # Începe procesul
+    scraper.scrape_and_populate(num_pages=200)  # ~5000 anime
+
+
+if __name__ == "__main__":
+    main()
