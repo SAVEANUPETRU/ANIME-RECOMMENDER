@@ -1,11 +1,22 @@
 from fastapi import FastAPI
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-@app.get("/")
-def read_root():
-    return {"message": "Hello anime!"}
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+class ChatMessage(BaseModel):
+    message: str
+
+@app.post("/api/chat")
+async def chat_endpoint(chat_message: ChatMessage):
+    user_input = chat_message.message
+    reply = f"Am înțeles: '{user_input}'. Îți recomand Fullmetal Alchemist: Brotherhood!"
+    return {"response": reply}
