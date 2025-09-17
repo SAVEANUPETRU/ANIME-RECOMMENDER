@@ -37,6 +37,20 @@ class MALScraper:
             print(f"Eroare la obținerea top anime: {e}")
             return []
 
+    def get_anime_details(self, mal_id: int) -> Optional[Dict]:
+        """Obține detaliile complete ale unui anime după MAL ID"""
+        try:
+            url = f"{self.base_url}/anime/{mal_id}/full"
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+
+            time.sleep(1)  # Rate limiting
+            return response.json().get('data', {})
+
+        except Exception as e:
+            print(f"Eroare la obținerea detaliilor pentru anime {mal_id}: {e}")
+            return None
+
     def get_anime_characters(self, anime_id: int) -> List[Dict]:
         """Obține caracterele unui anime"""
         try:
@@ -98,11 +112,115 @@ class MALScraper:
 
         return main_characters
 
-    def insert_anime(self, anime_data: Dict, mal_anime_id: int) -> Optional[int]:
-        """Inserează un anime în baza de date"""
+    def extract_studio_name(self, studios_data: List[Dict]) -> Optional[str]:
+        """Extrage numele studioului principal"""
+        if studios_data:
+            return studios_data[0].get('name')
+        return None
+
+    def extract_demographic(self, demographics_data: List[Dict]) -> Optional[str]:
+        """Extrage categoria demografică"""
+        if demographics_data:
+            return demographics_data[0].get('name')
+        return None
+
+    def find_anime_by_mal_id(self, anime_name: str) -> Optional[int]:
+        """Găsește MAL ID-ul unui anime după nume folosind search API"""
         try:
-            # Obține caracterele principale
+            url = f"{self.base_url}/anime"
+            params = {
+                'q': anime_name,
+                'limit': 1
+            }
+            
+            response = requests.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+            
+            time.sleep(1)
+            data = response.json().get('data', [])
+            
+            if data:
+                return data[0].get('mal_id')
+                
+        except Exception as e:
+            print(f"Eroare la căutarea anime-ului {anime_name}: {e}")
+        
+        return None
+
+    def update_existing_anime(self, anime_record: Dict) -> bool:
+        """Actualizează un anime existent cu noile coloane"""
+        try:
+            anime_id = anime_record['id']
+            anime_name = anime_record['name']
+            
+            print(f"🔄 Actualizez: {anime_name}")
+            
+            # Caută MAL ID-ul
+            mal_id = self.find_anime_by_mal_id(anime_name)
+            
+            if not mal_id:
+                print(f"  ❌ Nu am găsit MAL ID pentru: {anime_name}")
+                return False
+            
+            # Obține detaliile complete
+            anime_details = self.get_anime_details(mal_id)
+            
+            if not anime_details:
+                print(f"  ❌ Nu am putut obține detaliile pentru: {anime_name}")
+                return False
+            
+            # Extrage noile date
+            synopsis = anime_details.get('synopsis', '')
+            if synopsis:
+                # Limitează synopsis la 1000 de caractere pentru a evita probleme de storage
+                synopsis = synopsis[:1000] + '...' if len(synopsis) > 1000 else synopsis
+            
+            studio = self.extract_studio_name(anime_details.get('studios', []))
+            demographic = self.extract_demographic(anime_details.get('demographics', []))
+            
+            # Pregătește update-ul
+            update_data = {
+                'synopsis': synopsis,
+                'studio': studio,
+                'demographic': demographic
+            }
+            
+            # Actualizează în baza de date
+            result = supabase.table('anime').update(update_data).eq('id', anime_id).execute()
+            
+            if result.data:
+                print(f"  ✅ Actualizat cu succes!")
+                print(f"    📝 Synopsis: {len(synopsis)} caractere")
+                print(f"    🏢 Studio: {studio}")
+                print(f"    👥 Demographic: {demographic}")
+                return True
+            else:
+                print(f"  ❌ Eroare la actualizare în baza de date")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Eroare la actualizarea anime-ului {anime_record.get('name', 'Unknown')}: {e}")
+            return False
+
+    def insert_anime(self, anime_data: Dict, mal_anime_id: int) -> Optional[int]:
+        """Inserează un anime nou în baza de date (cu toate coloanele)"""
+        try:
+            # Obține detaliile complete
+            anime_details = self.get_anime_details(mal_anime_id)
             main_characters = self.get_main_characters_names(mal_anime_id)
+
+            # Extrage datele pentru noile coloane
+            synopsis = ''
+            studio = None
+            demographic = None
+            
+            if anime_details:
+                synopsis = anime_details.get('synopsis', '')
+                if synopsis:
+                    synopsis = synopsis[:1000] + '...' if len(synopsis) > 1000 else synopsis
+                
+                studio = self.extract_studio_name(anime_details.get('studios', []))
+                demographic = self.extract_demographic(anime_details.get('demographics', []))
 
             # Pregătire date
             anime_record = {
@@ -110,7 +228,10 @@ class MALScraper:
                 'episodes': anime_data.get('episodes') or 0,
                 'themes': [theme['name'] for theme in anime_data.get('themes', [])],
                 'genres': [genre['name'] for genre in anime_data.get('genres', [])],
-                'mains': main_characters  # caracterele principale aici
+                'mains': main_characters,
+                'synopsis': synopsis,
+                'studio': studio,
+                'demographic': demographic
             }
 
             # Inserează în Supabase
@@ -119,6 +240,8 @@ class MALScraper:
             if result.data:
                 print(f"✅ Anime insereat: {anime_record['name']}")
                 print(f"  📝 Caractere principale: {', '.join(main_characters)}")
+                print(f"  🏢 Studio: {studio}")
+                print(f"  👥 Demographic: {demographic}")
                 return result.data[0]['id']
 
         except Exception as e:
@@ -126,16 +249,57 @@ class MALScraper:
 
         return None
 
+    def update_existing_records(self, batch_size: int = 50):
+        """Actualizează toate recordurile existente cu noile coloane"""
+        print("🔄 Încep actualizarea recordurilor existente...")
+        
+        try:
+            # Obține toate anime-urile care nu au synopsis completat
+            result = supabase.table('anime')\
+                .select('id, name')\
+                .is_('synopsis', 'null')\
+                .execute()
+            
+            anime_list = result.data
+            total_anime = len(anime_list)
+            
+            print(f"📊 Găsite {total_anime} anime-uri de actualizat")
+            
+            updated_count = 0
+            failed_count = 0
+            
+            for i, anime_record in enumerate(anime_list, 1):
+                print(f"\n📊 Progres: {i}/{total_anime}")
+                
+                if self.update_existing_anime(anime_record):
+                    updated_count += 1
+                else:
+                    failed_count += 1
+                
+                # Rate limiting
+                time.sleep(2)
+                
+                # Pauză mai lungă la fiecare batch
+                if i % batch_size == 0:
+                    print(f"⏸️ Pauză după {i} anime-uri...")
+                    time.sleep(10)
+            
+            print(f"\n🎉 Actualizare completă!")
+            print(f"✅ Actualizate cu succes: {updated_count}")
+            print(f"❌ Eșuate: {failed_count}")
+            
+        except Exception as e:
+            print(f"❌ Eroare la actualizarea recordurilor: {e}")
+
     def scrape_and_populate(self, num_pages: int = 4):
-        """Funcția principală pentru scraping și populare"""
-        print("🚀 Începe scraping-ul MyAnimeList...")
+        """Funcția principală pentru scraping și populare (anime-uri noi)"""
+        print("🚀 Începe scraping-ul MyAnimeList pentru anime-uri noi...")
 
         total_anime = 0
 
         for page in range(1, num_pages + 1):
             print(f"\n📄 Procesez pagina {page}...")
-            if page < 120:
-                continue
+            
             anime_list = self.get_top_anime(limit=25, page=page)
 
             for anime_data in anime_list:
@@ -151,7 +315,7 @@ class MALScraper:
                     print(f"  ⚠️ Anime-ul {title} există deja, sărim peste el")
                     continue
 
-                # Inserează anime-ul cu caracterele principale
+                # Inserează anime-ul cu toate coloanele
                 anime_db_id = self.insert_anime(anime_data, mal_id)
 
                 if anime_db_id:
@@ -160,7 +324,7 @@ class MALScraper:
                 # Rate limiting
                 time.sleep(2)
 
-        print(f"\n🎉 Scraping complet! Total anime procesate: {total_anime}")
+        print(f"\n🎉 Scraping complet! Total anime noi procesate: {total_anime}")
 
 
 def main():
@@ -176,8 +340,32 @@ def main():
     # Inițializează scraper-ul
     scraper = MALScraper()
 
-    # Începe procesul
-    scraper.scrape_and_populate(num_pages=200)  # ~5000 anime
+    # Alege ce vrei să faci
+    print("\n🎯 Ce vrei să faci?")
+    print("1. Actualizează anime-urile existente cu noile coloane")
+    print("2. Adaugă anime-uri noi")
+    print("3. Ambele (actualizează existente, apoi adaugă noi)")
+    
+    choice = input("\nIntroduci opțiunea (1/2/3): ").strip()
+    
+    if choice == "1":
+        # Actualizează doar anime-urile existente
+        scraper.update_existing_records()
+        
+    elif choice == "2":
+        # Adaugă doar anime-uri noi
+        scraper.scrape_and_populate(num_pages=200)
+        
+    elif choice == "3":
+        # Ambele
+        print("\n🔄 Primul pas: Actualizez anime-urile existente...")
+        scraper.update_existing_records()
+        
+        print("\n🆕 Al doilea pas: Adaug anime-uri noi...")
+        scraper.scrape_and_populate(num_pages=200)
+        
+    else:
+        print("❌ Opțiune invalidă!")
 
 
 if __name__ == "__main__":
