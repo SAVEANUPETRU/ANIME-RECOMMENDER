@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Importă funcția de recomandare și variabilele necesare
 # Asigură-te că fisierul similarity.py este în același director
+
+
 try:
     from similarity import get_recommendations, df, cosine_sim
 except ImportError:
@@ -40,9 +42,9 @@ async def chat_endpoint(chat_message: ChatMessage):
     if recommendations:
         # Transformăm lista de recomandări într-un șir de caractere
         recommendations_str = ", ".join(recommendations)
-        reply = f"Am înțeles, vrei recomandări similare cu '{user_input}'. Îți recomand: {recommendations_str}."
+        reply = f"So you want something similar with '{user_input}'. I would recommend: {recommendations_str}."
     else:
         # Dacă funcția nu a găsit nimic, răspundem corespunzător
-        reply = f"Îmi pare rău, nu am găsit recomandări pentru '{user_input}'. Poți încerca un alt titlu?Scrie doar numele anime-ului."
+        reply = f"I am sorry, I do not understand '{user_input}'. Please write the exact name of an anime, from My Anime List."
         
     return {"response": reply}

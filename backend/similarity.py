@@ -3,9 +3,17 @@ from supabase import create_client, Client
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import re
+import os
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path='.env') 
+
 # Setează datele tale de autentificare
-url: str = 'https://ftjfabgifsbdlnbxvgwo.supabase.co'
-key: str = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ0amZhYmdpZnNiZGxuYnh2Z3dvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU1MTAyOTcsImV4cCI6MjA3MTA4NjI5N30.os3bsl_sSyeLQ7O-cLGS2fUGlNzdtaxc_py_e0mjGQI'
+url: str = os.getenv("SUPABASE_URL")
+key: str = os.getenv("SUPABASE_KEY")
+if not url or not key:
+    print("EROARE: Variabilele SUPABASE_URL sau SUPABASE_KEY nu sunt setate. Verifică fișierul .env")
+    exit()
 supabase: Client = create_client(url, key)
 
 count_response = supabase.table('anime').select('*', count='exact').limit(0).execute()
@@ -40,34 +48,48 @@ print(f"Dimensiunea matricei TF-IDF: {tfidf_matrix.shape}")
 
 # --- Pasul 3: Calculul Similarității și Funcția de Recomandare ---
 cosine_sim = cosine_similarity(tfidf_matrix, tfidf_matrix)
+SIMILARITY_THRESHOLD = 95 
 
 def get_recommendations(title, cosine_sim_matrix=cosine_sim, anime_df=df):
     if title not in anime_df['name'].values:
         print("Anime-ul nu a fost găsit în baza de date.")
         return []
 
-    def get_provisional_series_id(name):
-        # Aceasta este versiunea simplificată și robustă a funcției
-        words = name.split()
-        if len(words) > 2 and words[1] in ['x', 'X']:
-            return ' '.join(words[:3]).lower()
-        return words[0].lower()
+    # Funcție internă pentru a crea setul de cuvinte al titlului
+    def get_token_set(name):
+        # 1. Elimină caracterele non-alfanumerice (rămân doar litere și cifre)
+        cleaned_name = re.sub(r'[^\w\s]', '', name).lower()
+        # 2. Împarte în cuvinte și le filtrează pe cele scurte (< 3 litere)
+        return set(word for word in cleaned_name.split() if len(word) >= 3)
 
-    provisional_series_id = get_provisional_series_id(title)
-    idx = anime_df[df['name'] == title].index[0]
+    # Obținem setul de cuvinte pentru anime-ul de referință
+    source_token_set = get_token_set(title)
+
+    idx = anime_df[anime_df['name'] == title].index[0]
     sim_scores = list(enumerate(cosine_sim_matrix[idx]))
     sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
 
     recommended_anime = []
+    
+    # Parcurgem lista de recomandări
     for i in range(1, len(sim_scores)):
         if len(recommended_anime) >= 10:
             break
         
         current_idx = sim_scores[i][0]
-        current_title = df['name'].iloc[current_idx]
-        current_provisional_id = get_provisional_series_id(current_title)
+        current_title = anime_df['name'].iloc[current_idx]
         
-        if current_provisional_id != provisional_series_id:
+        # Obținem setul de cuvinte pentru anime-ul recomandat
+        recommended_token_set = get_token_set(current_title)
+        
+        # Logica de filtrare: Dacă setul de cuvinte al sursei este un subset
+        # al setului de cuvinte recomandat (sau invers), le considerăm aceeași serie
+        
+        # EXEMPLU: {'hunter', 'hunter'} este subset de {'hunter', 'hunter', 'greed', 'island'}
+        is_same_series = source_token_set.issubset(recommended_token_set) or \
+                         recommended_token_set.issubset(source_token_set)
+        
+        if not is_same_series:
             recommended_anime.append(current_title)
             
     return recommended_anime
