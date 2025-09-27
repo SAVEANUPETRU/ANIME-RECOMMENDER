@@ -48,6 +48,11 @@ print(f"Dimensiunea matricei TF-IDF: {tfidf_matrix.shape}")
 
 # --- Pasul 3: Calculul Similarității și Funcția de Recomandare ---
 cosine_sim = cosine_similarity(tfidf_matrix, tfidf_matrix)
+
+import numpy as np
+np.save('cosine_sim.npy', cosine_sim)
+print("Matricea de similaritate a fost salvată pe disc.")
+
 SIMILARITY_THRESHOLD = 95 
 
 def get_recommendations(title, cosine_sim_matrix=cosine_sim, anime_df=df):
