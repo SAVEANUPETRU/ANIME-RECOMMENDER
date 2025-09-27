@@ -12,8 +12,8 @@ load_dotenv(dotenv_path='.env')
 url: str = os.getenv("SUPABASE_URL")
 key: str = os.getenv("SUPABASE_KEY")
 if not url or not key:
-    print("EROARE: Variabilele SUPABASE_URL sau SUPABASE_KEY nu sunt setate. Verifică fișierul .env")
-    exit()
+    print("EROARE: Variabilele SUPABASE_URL sau SUPABASE_KEY nu sunt setate. Serverul nu poate porni!")
+    raise EnvironmentError("Variabile Supabase lipsă.")
 supabase: Client = create_client(url, key)
 
 count_response = supabase.table('anime').select('*', count='exact').limit(0).execute()
@@ -22,7 +22,7 @@ response = supabase.table('anime').select('*').range(0, total_rows - 1).execute(
 
 if not response.data:
     print("Eroare la extragerea datelor. Verifică URL-ul și cheia.")
-    exit()
+    raise ValueError("Nu s-au putut extrage date din Supabase.")
 
 df = pd.DataFrame(response.data)
 
@@ -94,6 +94,3 @@ def get_recommendations(title, cosine_sim_matrix=cosine_sim, anime_df=df):
             
     return recommended_anime
 
-# --- Exemplu de utilizare ---
-anime_recomended = get_recommendations('Hunter x Hunter')
-print(f"\nRecomandări pentru Hunter x Hunter:\n{anime_recomended}")
